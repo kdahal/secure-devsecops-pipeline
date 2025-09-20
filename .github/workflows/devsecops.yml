@@ -1,0 +1,45 @@
+name: Secure DevSecOps Pipeline
+on: [push, pull_request]
+jobs:
+  build-test-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build
+        run: npm install && npm run build
+      - name: Unit Tests
+        run: npm test
+      - name: SAST Scan
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: SCA Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      - name: IaC Provision
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          secrets: |
+            secret/data/devsecops/aws creds | AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY;
+            run: terraform init && terraform apply -auto-approve
+          
+      - name: Deploy to Staging
+        run: kubectl apply -f k8s/staging.yaml --context=eks-staging
+  deploy-prod:
+    needs: build-test-scan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: DAST Scan
+        run: zap-baseline.py -t https://staging-api.example.com
+      - name: Manual Approval
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.GITHUB_TOKEN }}
+          approvers: team-lead
+      - name: Deploy to Prod
+        run: kubectl apply -f k8s/prod.yaml --context=eks-prod
